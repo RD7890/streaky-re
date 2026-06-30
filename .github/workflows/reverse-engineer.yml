@@ -42,23 +42,28 @@ jobs:
           echo "apk_path=$APK" >> $GITHUB_OUTPUT
           echo "Found: $APK ($(du -sh $APK | cut -f1))"
 
-      - name: Decompile APK (resources only, keep original DEX)
+      - name: Decompile APK (main classes smali + full resources)
         run: |
           apktool d "${{ steps.find_apk.outputs.apk_path }}" \
-            --no-src \
+            --only-main-classes \
             -o decompiled --force
-          echo "Decompiled structure:"
+          echo "=== Decompiled structure ==="
           ls decompiled/
-          echo "--- AndroidManifest.xml (first 30 lines) ---"
-          head -30 decompiled/AndroidManifest.xml
+          echo "=== smali folders ==="
+          ls decompiled/smali/ | head -10
 
-      - name: Apply patches (colors, name, package)
+      - name: Show color resources before patch
+        run: |
+          echo "=== colors.xml (first 40 lines) ==="
+          find decompiled/res -name "colors.xml" | head -1 | xargs head -40 || true
+          echo "=== themes.xml / styles.xml primary color ==="
+          find decompiled/res -name "themes.xml" -o -name "styles.xml" | xargs grep -h "colorPrimary\|primary\|Primary" 2>/dev/null | head -15 || true
+
+      - name: Apply patches (colors, name, package, debug screen)
         run: python3 scripts/patch_colors.py decompiled/
 
-      - name: Show patched manifest
-        run: |
-          echo "--- Patched AndroidManifest.xml (first 30 lines) ---"
-          head -30 decompiled/AndroidManifest.xml
+      - name: Show patched manifest (first 40 lines)
+        run: head -40 decompiled/AndroidManifest.xml
 
       - name: Recompile APK
         run: |
@@ -107,9 +112,13 @@ jobs:
             --title "Patchify APK — Build ${{ github.run_number }}" \
             --notes "## Patchify built from Streaky v1.0.23
 
-          **Changes:** App name → Patchify | Package → com.patchify.app | Colors → purple/violet
-          **Signed:** v2 + v3 (Android 7+)
-          **DEX:** original untouched (--no-src)" \
+          **Changes:**
+          - App name: Streaky -> Patchify
+          - Package: com.patchify.app
+          - Primary color: #FF2541 (red)
+          - Debug screen added (open via debug icon in launcher)
+          - DEX: main classes re-smaled, secondary DEX kept original
+          - Signed: v2+v3" \
             --repo RD7890/streaky-re
           echo "Release: https://github.com/RD7890/streaky-re/releases/tag/$TAG"
 

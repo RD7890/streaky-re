@@ -42,17 +42,23 @@ jobs:
           echo "apk_path=$APK" >> $GITHUB_OUTPUT
           echo "Found: $APK ($(du -sh $APK | cut -f1))"
 
-      - name: Decompile APK
+      - name: Decompile APK (resources only, keep original DEX)
         run: |
-          apktool d "${{ steps.find_apk.outputs.apk_path }}" -o decompiled --force
+          apktool d "${{ steps.find_apk.outputs.apk_path }}" \
+            --no-src \
+            -o decompiled --force
+          echo "Decompiled structure:"
           ls decompiled/
+          echo "--- AndroidManifest.xml (first 30 lines) ---"
+          head -30 decompiled/AndroidManifest.xml
 
       - name: Apply patches (colors, name, package)
         run: python3 scripts/patch_colors.py decompiled/
 
-      - name: Show patched files
+      - name: Show patched manifest
         run: |
-          find decompiled/ -newer "${{ steps.find_apk.outputs.apk_path }}" -type f | head -30
+          echo "--- Patched AndroidManifest.xml (first 30 lines) ---"
+          head -30 decompiled/AndroidManifest.xml
 
       - name: Recompile APK
         run: |
@@ -62,7 +68,7 @@ jobs:
       - name: Zipalign
         run: |
           ZIPALIGN=$(find $ANDROID_HOME/build-tools -name "zipalign" | sort -V | tail -1)
-          echo "Using zipalign: $ZIPALIGN"
+          echo "Using: $ZIPALIGN"
           $ZIPALIGN -v 4 patched-raw.apk patched-aligned.apk
           ls -lh patched-aligned.apk
 
@@ -75,16 +81,16 @@ jobs:
             -dname "CN=Patchify,OU=RE,O=Patchify,L=City,S=State,C=US" \
             -storepass patchify123 -keypass patchify123 -noprompt
 
-      - name: Sign with apksigner (v1+v2+v3)
+      - name: Sign with apksigner (v2+v3)
         run: |
           APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -V | tail -1)
-          echo "Using apksigner: $APKSIGNER"
+          echo "Using: $APKSIGNER"
           $APKSIGNER sign \
             --ks patchify.keystore \
             --ks-key-alias patchify \
             --ks-pass pass:patchify123 \
             --key-pass pass:patchify123 \
-            --v1-signing-enabled true \
+            --v1-signing-enabled false \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
             --out patchify-signed.apk \
@@ -99,7 +105,11 @@ jobs:
           TAG="build-${{ github.run_number }}"
           gh release create "$TAG" patchify-signed.apk \
             --title "Patchify APK — Build ${{ github.run_number }}" \
-            --notes "$(printf '## Patchify — built from Streaky v1.0.23\n\n**Changes applied:**\n- App name: Streaky → Patchify\n- Package ID → `com.patchify.app`\n- Colors → deep purple / violet / teal\n- Signed with v1+v2+v3 (Android 5+)\n\n**Build:** ${{ github.run_number }}')" \
+            --notes "## Patchify built from Streaky v1.0.23
+
+          **Changes:** App name → Patchify | Package → com.patchify.app | Colors → purple/violet
+          **Signed:** v2 + v3 (Android 7+)
+          **DEX:** original untouched (--no-src)" \
             --repo RD7890/streaky-re
           echo "Release: https://github.com/RD7890/streaky-re/releases/tag/$TAG"
 

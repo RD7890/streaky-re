@@ -40,12 +40,11 @@ jobs:
         run: |
           APK=$(find . -maxdepth 1 -name "*.apk" | head -1)
           echo "apk_path=$APK" >> $GITHUB_OUTPUT
-          echo "Found APK: $APK ($(du -sh $APK | cut -f1))"
+          echo "Found: $APK ($(du -sh $APK | cut -f1))"
 
-      - name: Decompile APK with apktool
+      - name: Decompile APK
         run: |
           apktool d "${{ steps.find_apk.outputs.apk_path }}" -o decompiled --force
-          echo "Decompiled OK:"
           ls decompiled/
 
       - name: Apply patches (colors, name, package)
@@ -53,57 +52,59 @@ jobs:
 
       - name: Show patched files
         run: |
-          echo "=== Files modified by patcher ==="
           find decompiled/ -newer "${{ steps.find_apk.outputs.apk_path }}" -type f | head -30
 
       - name: Recompile APK
         run: |
-          apktool b decompiled/ -o patched-unsigned.apk
-          ls -lh patched-unsigned.apk
+          apktool b decompiled/ -o patched-raw.apk
+          ls -lh patched-raw.apk
 
-      - name: Sign APK with debug keystore
+      - name: Zipalign
         run: |
-          keytool -genkey -v -keystore debug.keystore -alias debug \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Patchify,OU=RE,O=RE,L=City,S=State,C=US" \
-            -storepass android -keypass android -noprompt
-          jarsigner -verbose \
-            -sigalg SHA256withRSA -digestalg SHA-256 \
-            -keystore debug.keystore \
-            -storepass android -keypass android \
-            patched-unsigned.apk debug
-          mv patched-unsigned.apk patchify-signed.apk
-          ls -lh patchify-signed.apk
+          ZIPALIGN=$(find $ANDROID_HOME/build-tools -name "zipalign" | sort -V | tail -1)
+          echo "Using zipalign: $ZIPALIGN"
+          $ZIPALIGN -v 4 patched-raw.apk patched-aligned.apk
+          ls -lh patched-aligned.apk
 
-      - name: Create GitHub Release and upload APK
+      - name: Generate signing keystore
+        run: |
+          keytool -genkey -v \
+            -keystore patchify.keystore \
+            -alias patchify \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Patchify,OU=RE,O=Patchify,L=City,S=State,C=US" \
+            -storepass patchify123 -keypass patchify123 -noprompt
+
+      - name: Sign with apksigner (v1+v2+v3)
+        run: |
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -V | tail -1)
+          echo "Using apksigner: $APKSIGNER"
+          $APKSIGNER sign \
+            --ks patchify.keystore \
+            --ks-key-alias patchify \
+            --ks-pass pass:patchify123 \
+            --key-pass pass:patchify123 \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out patchify-signed.apk \
+            patched-aligned.apk
+          ls -lh patchify-signed.apk
+          $APKSIGNER verify --verbose patchify-signed.apk
+
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="build-${{ github.run_number }}"
           gh release create "$TAG" patchify-signed.apk \
             --title "Patchify APK — Build ${{ github.run_number }}" \
-            --notes "## Patchify — auto-built from Streaky v1.0.23
-
-          **Changes applied:**
-          - App name: Streaky → Patchify
-          - Package ID → \`com.patchify.app\`
-          - Primary colors → deep purple / violet / teal palette
-
-          **Build:** ${{ github.run_number }}
-          **Triggered by:** ${{ github.sha }}" \
+            --notes "$(printf '## Patchify — built from Streaky v1.0.23\n\n**Changes applied:**\n- App name: Streaky → Patchify\n- Package ID → `com.patchify.app`\n- Colors → deep purple / violet / teal\n- Signed with v1+v2+v3 (Android 5+)\n\n**Build:** ${{ github.run_number }}')" \
             --repo RD7890/streaky-re
-          echo "Release URL: https://github.com/RD7890/streaky-re/releases/tag/$TAG"
+          echo "Release: https://github.com/RD7890/streaky-re/releases/tag/$TAG"
 
       - name: Job summary
         run: |
           TAG="build-${{ github.run_number }}"
-          echo "## Patchify APK Built Successfully" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Download:** https://github.com/RD7890/streaky-re/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Change | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| App name | Streaky → **Patchify** |" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | → \`com.patchify.app\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Colors | Orange/Red → Deep Purple/Violet |" >> $GITHUB_STEP_SUMMARY
-
+          echo "## Patchify APK Built" >> $GITHUB_STEP_SUMMARY
+          echo "**Download:** https://github.com/RD7890/streaky-re/releases/download/$TAG/patchify-signed.apk" >> $GITHUB_STEP_SUMMARY

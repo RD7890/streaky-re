@@ -1,0 +1,94 @@
+name: Reverse Engineer & Recompile APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*.apk'
+      - 'scripts/**'
+  workflow_dispatch:
+
+jobs:
+  reverse-engineer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install apktool
+        run: |
+          wget -q https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar -O apktool.jar
+          wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool -O apktool
+          chmod +x apktool
+          sudo mv apktool /usr/local/bin/
+          sudo mv apktool.jar /usr/local/bin/
+          apktool --version
+
+      - name: Find APK
+        id: find_apk
+        run: |
+          APK=$(find . -maxdepth 1 -name "*.apk" | head -1)
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "Found APK: $APK ($(du -sh $APK | cut -f1))"
+
+      - name: Decompile APK with apktool
+        run: |
+          apktool d "${{ steps.find_apk.outputs.apk_path }}" -o decompiled --force
+          echo "── Decompiled structure ──"
+          ls -la decompiled/
+
+      - name: Apply patches (colors, name, package)
+        run: python3 scripts/patch_colors.py decompiled/
+
+      - name: Show patched files
+        run: |
+          echo "── Files modified by patcher ──"
+          find decompiled/ -newer "${{ steps.find_apk.outputs.apk_path }}" -type f | head -30
+
+      - name: Recompile APK
+        run: |
+          apktool b decompiled/ -o patched-unsigned.apk
+          echo "Recompile OK — $(du -sh patched-unsigned.apk | cut -f1)"
+
+      - name: Sign APK with debug keystore
+        run: |
+          keytool -genkey -v -keystore debug.keystore -alias debug \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Patchify,OU=RE,O=RE,L=City,S=State,C=US" \
+            -storepass android -keypass android -noprompt
+
+          jarsigner -verbose \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore debug.keystore \
+            -storepass android -keypass android \
+            patched-unsigned.apk debug
+
+          mv patched-unsigned.apk patchify-signed-${{ github.run_number }}.apk
+          echo "Signed APK: $(du -sh patchify-signed-${{ github.run_number }}.apk | cut -f1)"
+
+      - name: Upload patched APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchify-apk-run-${{ github.run_number }}
+          path: patchify-signed-${{ github.run_number }}.apk
+          retention-days: 30
+
+      - name: Job summary
+        run: |
+          echo "## ✅ Reverse Engineering Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Original APK | \`${{ steps.find_apk.outputs.apk_path }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Output APK | \`patchify-signed-${{ github.run_number }}.apk\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| App name | Streaky → **Patchify** |" >> $GITHUB_STEP_SUMMARY
+          echo "| Package ID | → \`com.patchify.app\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Colors | Orange/Red → Deep Purple/Violet |" >> $GITHUB_STEP_SUMMARY
+          ls -lh patchify-signed-${{ github.run_number }}.apk >> $GITHUB_STEP_SUMMARY

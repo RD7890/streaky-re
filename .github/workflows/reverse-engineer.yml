@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
     paths:
-      - '*.apk'
-      - 'scripts/**'
+      - "*.apk"
+      - "scripts/**"
+      - ".github/workflows/**"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   reverse-engineer:
@@ -20,7 +24,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Install apktool
         run: |
@@ -41,21 +45,21 @@ jobs:
       - name: Decompile APK with apktool
         run: |
           apktool d "${{ steps.find_apk.outputs.apk_path }}" -o decompiled --force
-          echo "── Decompiled structure ──"
-          ls -la decompiled/
+          echo "Decompiled OK:"
+          ls decompiled/
 
       - name: Apply patches (colors, name, package)
         run: python3 scripts/patch_colors.py decompiled/
 
       - name: Show patched files
         run: |
-          echo "── Files modified by patcher ──"
+          echo "=== Files modified by patcher ==="
           find decompiled/ -newer "${{ steps.find_apk.outputs.apk_path }}" -type f | head -30
 
       - name: Recompile APK
         run: |
           apktool b decompiled/ -o patched-unsigned.apk
-          echo "Recompile OK — $(du -sh patched-unsigned.apk | cut -f1)"
+          ls -lh patched-unsigned.apk
 
       - name: Sign APK with debug keystore
         run: |
@@ -63,32 +67,43 @@ jobs:
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Patchify,OU=RE,O=RE,L=City,S=State,C=US" \
             -storepass android -keypass android -noprompt
-
           jarsigner -verbose \
             -sigalg SHA256withRSA -digestalg SHA-256 \
             -keystore debug.keystore \
             -storepass android -keypass android \
             patched-unsigned.apk debug
+          mv patched-unsigned.apk patchify-signed.apk
+          ls -lh patchify-signed.apk
 
-          mv patched-unsigned.apk patchify-signed-${{ github.run_number }}.apk
-          echo "Signed APK: $(du -sh patchify-signed-${{ github.run_number }}.apk | cut -f1)"
+      - name: Create GitHub Release and upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" patchify-signed.apk \
+            --title "Patchify APK — Build ${{ github.run_number }}" \
+            --notes "## Patchify — auto-built from Streaky v1.0.23
 
-      - name: Upload patched APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: patchify-apk-run-${{ github.run_number }}
-          path: patchify-signed-${{ github.run_number }}.apk
-          retention-days: 30
+          **Changes applied:**
+          - App name: Streaky → Patchify
+          - Package ID → \`com.patchify.app\`
+          - Primary colors → deep purple / violet / teal palette
+
+          **Build:** ${{ github.run_number }}
+          **Triggered by:** ${{ github.sha }}" \
+            --repo RD7890/streaky-re
+          echo "Release URL: https://github.com/RD7890/streaky-re/releases/tag/$TAG"
 
       - name: Job summary
         run: |
-          echo "## ✅ Reverse Engineering Complete" >> $GITHUB_STEP_SUMMARY
+          TAG="build-${{ github.run_number }}"
+          echo "## Patchify APK Built Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Step | Result |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Original APK | \`${{ steps.find_apk.outputs.apk_path }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Output APK | \`patchify-signed-${{ github.run_number }}.apk\` |" >> $GITHUB_STEP_SUMMARY
+          echo "**Download:** https://github.com/RD7890/streaky-re/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Change | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| App name | Streaky → **Patchify** |" >> $GITHUB_STEP_SUMMARY
-          echo "| Package ID | → \`com.patchify.app\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | → \`com.patchify.app\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Colors | Orange/Red → Deep Purple/Violet |" >> $GITHUB_STEP_SUMMARY
-          ls -lh patchify-signed-${{ github.run_number }}.apk >> $GITHUB_STEP_SUMMARY
+
